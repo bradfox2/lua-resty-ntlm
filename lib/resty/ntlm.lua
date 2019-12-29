@@ -83,17 +83,17 @@ end
 
 local parsetlv = function(dertype, derobj, partial)
     if string.sub(derobj, 1, 1) ~= dertype then
-        ngx.log(ngx.ERR, "BER element")
+        --ngx.log(ngx.ERR, "BER element")
     end
     length, pstart = parselen(derobj)
     if partial then
         if #derobj < length+pstart then
-            ngx.log(ngx.ERR, "BER payload")
+            --ngx.log(ngx.ERR, "BER payload")
         end
         return string.sub(derobj, pstart+1, pstart+length), string.sub(derobj, pstart+length+1)
     end
     if #derobj ~= (length+pstart) then
-        ngx.log(ngx.ERR, "BER payload2")
+        --ngx.log(ngx.ERR, "BER payload2")
     end
     return string.sub(derobj, pstart+1), nil
 end
@@ -173,7 +173,7 @@ local parse_session_setup_resp = function(msg, proxy)
     data = parseseq(msg)
     messageId, data = parseint(data, true, '\x02')
     if messageId ~= proxy.transactionId then
-        ngx.log(ngx.ERR, "Unexpected MessageID: " .. messageId)
+        --ngx.log(ngx.ERR, "Unexpected MessageID: " .. messageId)
     end
     data, controls = parsetlv('\x61', data, true) 
     resultCode, data = parseenum(data, true)
@@ -198,6 +198,7 @@ local ntlm_transaction = function(msg, proxy, timeout)
         ngx.log(ngx.ERR, "Connect fail: " .. err, " server: ", proxy.server, " port: ", proxy.port)
         return nil
     end
+    print("Message is " .. msg)
     length, err = sock:send(msg)
     if err == nil then
         hdr, err, partial = sock:receive(6)
@@ -212,6 +213,7 @@ local ntlm_transaction = function(msg, proxy, timeout)
         else
             sock:close()
         end
+        ngx.log(ngx.INFO, hdr .. payload)
         return hdr .. payload
     end
     sock:close()
@@ -237,12 +239,12 @@ local ntlm_handle_type1 = function(token, proxy, cache, timeout)
     local status = ngx.HTTP_INTERNAL_SERVER_ERROR
     local idx = ngx.var.connection
     local msg = make_session_setup_req(token, proxy)
-    -- ngx.log(ngx.ERR, "==start to send type1", " connection id= ", idx)
+    --ngx.log(ngx.INFO, "==start to send type1", " connection id= ", idx)
     msg = ntlm_transaction(msg, proxy, timeout)
     if msg ~= nil then 
-        -- ngx.log(ngx.ERR, "==end send type1")
+         ----ngx.log(ngx.ERR, "==end send type1")
         ok, msg = parse_session_setup_resp(msg, proxy)
-        -- ngx.log(ngx.ERR, "==type1 completed")
+         ----ngx.log(ngx.ERR, "==type1 completed")
         if ok then
             cache:set(idx, cjson.encode(proxy), timeout)
             status = ngx.HTTP_UNAUTHORIZED
@@ -258,24 +260,28 @@ local ntlm_handle_type3 = function(token, proxy, cache, timeout)
     local idx = ngx.var.connection
     local username, domain = parse_ntlm_authenticate(token)
     local msg = make_session_setup_req(token, proxy)
-    -- ngx.log(ngx.ERR, "--start to send type3", " connection id= ", idx)
+     --ngx.log(ngx.ERR, "--start to send type3", " connection id= ", idx)
     msg = ntlm_transaction(msg, proxy, 0)
     if msg ~= nil then
-        -- ngx.log(ngx.ERR, "--end send type3")
+        ----ngx.log(ngx.ERR, "--end send type3")
         ok, msg = parse_session_setup_resp(msg, proxy)
-        -- ngx.log(ngx.ERR, "--type3 completed")
+        --ngx.log(ngx.ERR, "--type3 completed")
         if ok then
-            -- ngx.log(ngx.ERR, "auth succeed")
+            ----ngx.log(ngx.ERR, "auth succeed")
+            ----ngx.log(ngx.ERR, username)
             proxy.authorized = true
             proxy.username = username
             proxy.domain = domain
             cache:set(idx, cjson.encode(proxy), timeout)
+            
             -- update req headers
-            ngx.req.set_header('X-Ntlm-Username', username)
-            ngx.req.set_header('X-Ntlm-Domain', domain)
+            ngx.header['Access-Control-Expose-Headers'] = '*'
+            ngx.header['X-Ntlm-Username'] = username
+            ngx.header['X-Ntlm-Domain'] = domain
+            
             return
         else
-            ngx.log(ngx.ERR, "auth fails. try again")
+            ----ngx.log(ngx.ERR, "auth fails. try again")
             ngx.header["WWW-Authenticate"] = "NTLM"
             status = ngx.HTTP_UNAUTHORIZED
         end
@@ -289,8 +295,6 @@ local isAuthorized = function(cache, timeout)
     if value ~= nil then
         local proxy = cjson.decode(value)
         if proxy.authorized == true then
-            ngx.req.set_header('X-Ntlm-Username', proxy.username)
-            ngx.req.set_header('X-Ntlm-Domain', proxy.domain)
             cache:set(idx, value, timeout)
             return true, proxy
         end
@@ -302,6 +306,9 @@ end
 function _M.negotiate(ldap, cache, timeout)
     local ok, proxy = isAuthorized(cache, timeout)
     if ok then
+        ngx.header['Access-Control-Expose-Headers'] = '*'
+        ngx.header['X-Ntlm-Username'] = proxy.username
+        ngx.header['X-Ntlm-Domain'] = proxy.domain
         return
     end
     local message = ngx.var.http_Authorization
@@ -319,6 +326,8 @@ function _M.negotiate(ldap, cache, timeout)
             return ntlm_handle_type3(msg, proxy, cache, timeout)
         end 
     end
+    --ngx.log(ngx.ERR, "Unauthorized.")
+    ----ngx.log(ngx.ERR, message)
     ngx.status = ngx.HTTP_UNAUTHORIZED
     ngx.header["WWW-Authenticate"] = "NTLM"
     ngx.exit(ngx.HTTP_UNAUTHORIZED)
